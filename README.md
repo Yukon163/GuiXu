@@ -48,10 +48,10 @@ fn main() -> Result<()> {
 
 ## Test
 
-Run from WSL:
+Run :
 
 ```bash
-cd /mnt/c/Users/25775/Documents/program/GuiXu/rust/GuiXu
+cd "对应目录"
 cargo test
 ```
 
