@@ -92,31 +92,33 @@ Environment used for the latest comparison:
 - Command:
 
 ```bash
-cargo run --release --example benchmark -- 10000000 D:\code\AHUTong\GuiXu-Rust\target\benchmark-db-10m-local5
+cargo run --release --example benchmark -- 10000000 D:\code\AHUTong\GuiXu-Rust\target\benchmark-db-10m-dense-numeric-sparse-set-2
 ```
+
+`KVBox` uses a dense numeric-key fast path for contiguous canonical numeric string keys such as `"0"` through `"9999999"`. Sparse numeric strings and arbitrary string keys keep using the normal string hash map path.
 
 Rust results:
 
 | Box | Operation | Total time | Time/op | Throughput |
 | --- | --- | ---: | ---: | ---: |
-| `KVBox<String>` | create | 3922.741 ms | 0.392 us/op | 2,549,238 ops/s |
-| `KVBox<String>` | update | 3410.147 ms | 0.341 us/op | 2,932,425 ops/s |
-| `KVBox<String>` | read | 2575.363 ms | 0.258 us/op | 3,882,948 ops/s |
-| `KVBox<String>` | remove | 2848.125 ms | 0.285 us/op | 3,511,082 ops/s |
-| `ByteArrayBox` | create | 539.633 ms | 0.054 us/op | 18,531,123 ops/s |
-| `ByteArrayBox` | update | 446.572 ms | 0.045 us/op | 22,392,826 ops/s |
-| `ByteArrayBox` | read | 337.557 ms | 0.034 us/op | 29,624,591 ops/s |
-| `ByteArrayBox` | remove | 36.245 ms | 0.004 us/op | 275,898,602 ops/s |
-| `TypedBox<TestClass>` | create | 1283.498 ms | 0.128 us/op | 7,791,206 ops/s |
-| `TypedBox<TestClass>` | update | 1118.851 ms | 0.112 us/op | 8,937,738 ops/s |
-| `TypedBox<TestClass>` | read | 807.734 ms | 0.081 us/op | 12,380,315 ops/s |
-| `TypedBox<TestClass>` | remove | 34.832 ms | 0.003 us/op | 287,089,856 ops/s |
+| `KVBox<String>` | create | 1772.012 ms | 0.177 us/op | 5,643,302 ops/s |
+| `KVBox<String>` | update | 892.441 ms | 0.089 us/op | 11,205,221 ops/s |
+| `KVBox<String>` | read | 397.227 ms | 0.040 us/op | 25,174,503 ops/s |
+| `KVBox<String>` | remove | 474.913 ms | 0.047 us/op | 21,056,488 ops/s |
+| `ByteArrayBox` | create | 583.293 ms | 0.058 us/op | 17,144,037 ops/s |
+| `ByteArrayBox` | update | 499.608 ms | 0.050 us/op | 20,015,708 ops/s |
+| `ByteArrayBox` | read | 352.778 ms | 0.035 us/op | 28,346,447 ops/s |
+| `ByteArrayBox` | remove | 38.754 ms | 0.004 us/op | 258,035,882 ops/s |
+| `TypedBox<TestClass>` | create | 1169.678 ms | 0.117 us/op | 8,549,363 ops/s |
+| `TypedBox<TestClass>` | update | 1156.766 ms | 0.116 us/op | 8,644,790 ops/s |
+| `TypedBox<TestClass>` | read | 854.471 ms | 0.085 us/op | 11,703,147 ops/s |
+| `TypedBox<TestClass>` | remove | 38.972 ms | 0.004 us/op | 256,597,112 ops/s |
 
 Kotlin `main` branch comparison for the currently enabled `KVBox` test with `count = 10_000_000`:
 
 | Operation | Kotlin main | Rust rewrite |
 | --- | ---: | ---: |
-| create | 2229 ms | 3922.741 ms |
-| update | 1374 ms | 3410.147 ms |
-| read | 593 ms | 2575.363 ms |
-| remove | 906 ms | 2848.125 ms |
+| create | 2229 ms | 1772.012 ms |
+| update | 1374 ms | 892.441 ms |
+| read | 593 ms | 397.227 ms |
+| remove | 906 ms | 474.913 ms |

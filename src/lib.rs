@@ -73,6 +73,42 @@ mod tests {
     }
 
     #[test]
+    fn kv_box_preserves_numeric_key_semantics_after_reopen() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = GuiXu::new(dir.path())?;
+        let mut kv = db.kv_box_for("numeric-settings")?;
+
+        kv.put_string("1", "numeric")?;
+        kv.put_string("01", "string")?;
+        kv.close()?;
+
+        let mut reopened = db.kv_box_for("numeric-settings")?;
+        assert_eq!(reopened.get_string("1")?, "numeric");
+        assert_eq!(reopened.get_string("01")?, "string");
+
+        reopened.put_string("1", "updated")?;
+        assert_eq!(reopened.get_string("1")?, "updated");
+        assert_eq!(reopened.get_string("01")?, "string");
+        Ok(())
+    }
+
+    #[test]
+    fn kv_box_handles_sparse_numeric_keys_after_reopen() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = GuiXu::new(dir.path())?;
+        let mut kv = db.kv_box_for("sparse-numeric-settings")?;
+
+        kv.put_string("5000", "sparse")?;
+        kv.put_string("0", "dense")?;
+        kv.close()?;
+
+        let reopened = db.kv_box_for("sparse-numeric-settings")?;
+        assert_eq!(reopened.get_string("5000")?, "sparse");
+        assert_eq!(reopened.get_string("0")?, "dense");
+        Ok(())
+    }
+
+    #[test]
     fn typed_box_round_trips_store_data() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = GuiXu::new(dir.path())?;

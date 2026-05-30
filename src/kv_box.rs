@@ -6,7 +6,7 @@ use crate::byte_ops::{
 };
 use crate::error::{GuiXuError, Result};
 use crate::file_access::AutoIncreaseFileAccess;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::fs::remove_file;
 use std::path::PathBuf;
@@ -26,6 +26,8 @@ const VALUE_TYPE_INT_ARRAY: u8 = 9;
 const VALUE_TYPE_LONG_ARRAY: u8 = 10;
 const VALUE_TYPE_FLOAT_ARRAY: u8 = 11;
 const VALUE_TYPE_DOUBLE_ARRAY: u8 = 12;
+const MAX_DENSE_NUMERIC_KEY: u64 = 20_000_000;
+const MAX_DENSE_NUMERIC_GAP: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 enum KVValue {
@@ -54,7 +56,10 @@ struct KVItem {
 
 pub struct KVBox {
     basic: BasicBox,
-    map: FxHashMap<String, KVItem>,
+    string_map: FxHashMap<String, KVItem>,
+    numeric_items: Vec<Option<KVItem>>,
+    sparse_numeric_keys: FxHashSet<u64>,
+    numeric_len: usize,
     map_file: Option<AutoIncreaseFileAccess>,
     map_file_append_position: u64,
     map_capacity_dirty: bool,
@@ -69,7 +74,10 @@ impl KVBox {
         )?;
         let mut box_ = Self {
             basic,
-            map: FxHashMap::default(),
+            string_map: FxHashMap::default(),
+            numeric_items: Vec::new(),
+            sparse_numeric_keys: FxHashSet::default(),
+            numeric_len: 0,
             map_file: Some(map_file),
             map_file_append_position: 0,
             map_capacity_dirty: false,
@@ -90,6 +98,54 @@ impl KVBox {
             .ok_or_else(|| GuiXuError::Corrupt("kv map file is closed".to_string()))
     }
 
+    fn lookup_item(&self, key: &str) -> Option<&KVItem> {
+        if let Some(numeric_key) = parse_dense_numeric_key(key) {
+            self.get_numeric_item(numeric_key).or_else(|| {
+                self.sparse_numeric_keys
+                    .contains(&numeric_key)
+                    .then(|| self.string_map.get(key))
+                    .flatten()
+            })
+        } else {
+            self.string_map.get(key)
+        }
+    }
+
+    fn get_numeric_item(&self, numeric_key: u64) -> Option<&KVItem> {
+        let index = usize::try_from(numeric_key).ok()?;
+        self.numeric_items.get(index)?.as_ref()
+    }
+
+    fn get_numeric_item_mut(&mut self, numeric_key: u64) -> Option<&mut KVItem> {
+        let index = usize::try_from(numeric_key).ok()?;
+        self.numeric_items.get_mut(index)?.as_mut()
+    }
+
+    fn can_set_numeric_item(&self, numeric_key: u64) -> Result<bool> {
+        let index =
+            usize::try_from(numeric_key).map_err(|_| GuiXuError::FileTooLarge(numeric_key))?;
+        Ok(should_store_dense_numeric(self.numeric_items.len(), index))
+    }
+
+    fn set_numeric_item(&mut self, numeric_key: u64, item: KVItem) -> Result<()> {
+        let index =
+            usize::try_from(numeric_key).map_err(|_| GuiXuError::FileTooLarge(numeric_key))?;
+        if index == self.numeric_items.len() {
+            self.numeric_items.push(Some(item));
+            self.numeric_len += 1;
+            return Ok(());
+        }
+
+        if index > self.numeric_items.len() {
+            self.numeric_items.resize_with(index + 1, || None);
+        }
+        if self.numeric_items[index].is_none() {
+            self.numeric_len += 1;
+        }
+        self.numeric_items[index] = Some(item);
+        Ok(())
+    }
+
     fn initial_map(&mut self) -> Result<()> {
         let map_file = self.map_file()?;
         let length = map_file.length();
@@ -100,8 +156,11 @@ impl KVBox {
         }
 
         let capacity = map_file.read_i32(0)?.max(0) as usize;
-        let mut map = FxHashMap::default();
-        map.reserve(capacity);
+        let mut string_map = FxHashMap::default();
+        string_map.reserve(capacity);
+        let mut numeric_items = Vec::new();
+        let mut sparse_numeric_keys = FxHashSet::default();
+        let mut numeric_len = 0;
         let mut cursor = 4;
 
         while cursor < length {
@@ -115,8 +174,6 @@ impl KVBox {
 
             let mut key_bytes = vec![0; key_length];
             map_file.read_exact_at(cursor, &mut key_bytes)?;
-            let key = String::from_utf8(key_bytes)
-                .map_err(|error| GuiXuError::Corrupt(error.to_string()))?;
             cursor += key_length as u64;
 
             let value = if value_type == VALUE_TYPE_DELETE {
@@ -126,19 +183,44 @@ impl KVBox {
                 Self::byte_array_to_value(&bytes, value_type)?
             };
 
-            map.insert(
-                key,
-                KVItem {
-                    file_position,
-                    id,
-                    value_type,
-                    value,
-                },
-            );
+            let item = KVItem {
+                file_position,
+                id,
+                value_type,
+                value,
+            };
+
+            let numeric_key = parse_dense_numeric_key_bytes(&key_bytes);
+            if let Some(numeric_key) = numeric_key {
+                let index = usize::try_from(numeric_key)
+                    .map_err(|_| GuiXuError::FileTooLarge(numeric_key))?;
+                if should_store_dense_numeric(numeric_items.len(), index) {
+                    if index >= numeric_items.len() {
+                        numeric_items.resize_with(index + 1, || None);
+                    }
+                    if numeric_items[index].is_none() {
+                        numeric_len += 1;
+                    }
+                    numeric_items[index] = Some(item);
+                    continue;
+                }
+            }
+
+            {
+                let key = String::from_utf8(key_bytes)
+                    .map_err(|error| GuiXuError::Corrupt(error.to_string()))?;
+                if let Some(numeric_key) = numeric_key {
+                    sparse_numeric_keys.insert(numeric_key);
+                }
+                string_map.insert(key, item);
+            }
         }
 
         self.map_file_append_position = length;
-        self.map = map;
+        self.string_map = string_map;
+        self.numeric_items = numeric_items;
+        self.sparse_numeric_keys = sparse_numeric_keys;
+        self.numeric_len = numeric_len;
         Ok(())
     }
 
@@ -196,16 +278,19 @@ impl KVBox {
         value_type: u8,
         value: KVValue,
     ) -> Result<KVItem> {
-        let key_bytes = key.as_bytes();
-        let position = self.map_file_append_position;
-        self.map_file_append_position += KV_ITEM_FIX_LENGTH + key_bytes.len() as u64;
-
-        let item = KVItem {
+        let position = self.write_kv_item_record(key, id, value_type)?;
+        Ok(KVItem {
             file_position: position,
             id,
             value_type,
             value,
-        };
+        })
+    }
+
+    fn write_kv_item_record(&mut self, key: &str, id: u64, value_type: u8) -> Result<u64> {
+        let key_bytes = key.as_bytes();
+        let position = self.map_file_append_position;
+        self.map_file_append_position += KV_ITEM_FIX_LENGTH + key_bytes.len() as u64;
 
         let mut buffer = Vec::with_capacity(KV_ITEM_FIX_LENGTH as usize + key_bytes.len());
         buffer.extend_from_slice(&i32_to_bytes(key_bytes.len() as i32));
@@ -215,7 +300,7 @@ impl KVBox {
 
         self.map_file_mut()?.write_all_at(position, &buffer)?;
         self.map_capacity_dirty = true;
-        Ok(item)
+        Ok(position)
     }
 
     fn update_kv_item(
@@ -245,29 +330,89 @@ impl KVBox {
     fn put_data(&mut self, key: impl Into<String>, value_type: u8, value: KVValue) -> Result<()> {
         let key = key.into();
         let bytes = Self::value_to_byte_array(&value, value_type)?;
-        if let Some(old) = self.map.get(&key) {
+        if let Some(numeric_key) = parse_dense_numeric_key(&key) {
+            return self.put_numeric_data(numeric_key, &key, value_type, value, &bytes);
+        }
+        self.put_string_key_data(key, value_type, value, &bytes)
+    }
+
+    fn put_numeric_data(
+        &mut self,
+        numeric_key: u64,
+        key: &str,
+        value_type: u8,
+        value: KVValue,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if let Some(old) = self.get_numeric_item(numeric_key) {
             let file_position = old.file_position;
             let id = old.id;
             let old_value_type = old.value_type;
             let item = self.update_kv_item(file_position, id, old_value_type, value_type, value)?;
-            self.basic.append_store(id, &bytes)?;
-            if let Some(old) = self.map.get_mut(&key) {
+            self.basic.append_store(id, bytes)?;
+            if let Some(old) = self.get_numeric_item_mut(numeric_key) {
+                *old = item;
+            }
+            return Ok(());
+        }
+
+        if self.sparse_numeric_keys.contains(&numeric_key) {
+            let Some(old) = self.string_map.get(key) else {
+                self.sparse_numeric_keys.remove(&numeric_key);
+                return self.put_numeric_data(numeric_key, key, value_type, value, bytes);
+            };
+            let file_position = old.file_position;
+            let id = old.id;
+            let old_value_type = old.value_type;
+            let item = self.update_kv_item(file_position, id, old_value_type, value_type, value)?;
+            self.basic.append_store(id, bytes)?;
+            if let Some(old) = self.string_map.get_mut(key) {
+                *old = item;
+            }
+            return Ok(());
+        }
+
+        let id = self.basic.check_id_and_get(0)?;
+        let item = self.add_kv_item(key, id, value_type, value)?;
+        self.basic.append_store(id, bytes)?;
+        if self.can_set_numeric_item(numeric_key)? {
+            self.set_numeric_item(numeric_key, item)?;
+        } else {
+            self.string_map.insert(key.to_string(), item);
+            self.sparse_numeric_keys.insert(numeric_key);
+        }
+        Ok(())
+    }
+
+    fn put_string_key_data(
+        &mut self,
+        key: String,
+        value_type: u8,
+        value: KVValue,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if let Some(old) = self.string_map.get(&key) {
+            let file_position = old.file_position;
+            let id = old.id;
+            let old_value_type = old.value_type;
+            let item = self.update_kv_item(file_position, id, old_value_type, value_type, value)?;
+            self.basic.append_store(id, bytes)?;
+            if let Some(old) = self.string_map.get_mut(&key) {
                 *old = item;
             }
             return Ok(());
         } else {
             let id = self.basic.check_id_and_get(0)?;
             let item = self.add_kv_item(&key, id, value_type, value)?;
-            self.basic.append_store(id, &bytes)?;
-            self.map.insert(key, item);
+            self.basic.append_store(id, bytes)?;
+            self.string_map.insert(key, item);
             Ok(())
         }
     }
 
     fn get_data(&self, key: &str, expected_type: u8) -> Result<KVValue> {
         let item = self
-            .map
-            .get(key)
+            .lookup_item(key)
             .ok_or_else(|| GuiXuError::KeyNotFound(key.to_string()))?;
         if item.value_type == VALUE_TYPE_DELETE {
             return Err(GuiXuError::KeyNotFound(key.to_string()));
@@ -282,16 +427,35 @@ impl KVBox {
     }
 
     pub fn remove(&mut self, key: &str) -> Result<()> {
-        let Some(item) = self.map.get(key) else {
+        let numeric_key = parse_dense_numeric_key(key);
+        let Some((file_position, id, is_dense_numeric)) = (if let Some(numeric_key) = numeric_key {
+            if let Some(item) = self.get_numeric_item(numeric_key) {
+                Some((item.file_position, item.id, true))
+            } else if self.sparse_numeric_keys.contains(&numeric_key) {
+                self.string_map
+                    .get(key)
+                    .map(|item| (item.file_position, item.id, false))
+            } else {
+                None
+            }
+        } else {
+            self.string_map
+                .get(key)
+                .map(|item| (item.file_position, item.id, false))
+        }) else {
             return Ok(());
         };
-        let file_position = item.file_position;
-        let id = item.id;
 
         self.basic.remove_entry(id)?;
         self.map_file_mut()?
             .write_u8(file_position + 4, VALUE_TYPE_DELETE)?;
-        if let Some(item) = self.map.get_mut(key) {
+        let item_slot = if is_dense_numeric {
+            let numeric_key = numeric_key.expect("dense numeric item must have a numeric key");
+            self.get_numeric_item_mut(numeric_key)
+        } else {
+            self.string_map.get_mut(key)
+        };
+        if let Some(item) = item_slot {
             *item = KVItem {
                 file_position,
                 id,
@@ -331,7 +495,116 @@ impl KVBox {
         key: impl Into<String>,
         data: impl Into<Cow<'static, str>>,
     ) -> Result<()> {
-        self.put_data(key, VALUE_TYPE_STRING, KVValue::String(data.into()))
+        let key = key.into();
+        let value = data.into();
+        if let Some(numeric_key) = parse_dense_numeric_key(&key) {
+            if let Some(old) = self.get_numeric_item(numeric_key) {
+                let file_position = old.file_position;
+                let id = old.id;
+                let old_value_type = old.value_type;
+                if old_value_type != VALUE_TYPE_DELETE && old_value_type != VALUE_TYPE_STRING {
+                    return Err(GuiXuError::TypeError {
+                        stored: old_value_type,
+                        expected: VALUE_TYPE_STRING,
+                    });
+                }
+                self.map_file_mut()?
+                    .write_u8(file_position + 4, VALUE_TYPE_STRING)?;
+                self.basic.append_store(id, value.as_bytes())?;
+                if let Some(old) = self.get_numeric_item_mut(numeric_key) {
+                    *old = KVItem {
+                        file_position,
+                        id,
+                        value_type: VALUE_TYPE_STRING,
+                        value: KVValue::String(value),
+                    };
+                }
+                return Ok(());
+            }
+
+            if self.sparse_numeric_keys.contains(&numeric_key) {
+                let Some(old) = self.string_map.get(&key) else {
+                    self.sparse_numeric_keys.remove(&numeric_key);
+                    return self.put_string(key, value);
+                };
+                let file_position = old.file_position;
+                let id = old.id;
+                let old_value_type = old.value_type;
+                if old_value_type != VALUE_TYPE_DELETE && old_value_type != VALUE_TYPE_STRING {
+                    return Err(GuiXuError::TypeError {
+                        stored: old_value_type,
+                        expected: VALUE_TYPE_STRING,
+                    });
+                }
+                self.map_file_mut()?
+                    .write_u8(file_position + 4, VALUE_TYPE_STRING)?;
+                self.basic.append_store(id, value.as_bytes())?;
+                if let Some(old) = self.string_map.get_mut(&key) {
+                    *old = KVItem {
+                        file_position,
+                        id,
+                        value_type: VALUE_TYPE_STRING,
+                        value: KVValue::String(value),
+                    };
+                }
+                return Ok(());
+            }
+
+            let id = self.basic.check_id_and_get(0)?;
+            let file_position = self.write_kv_item_record(&key, id, VALUE_TYPE_STRING)?;
+            self.basic.append_store(id, value.as_bytes())?;
+            let item = KVItem {
+                file_position,
+                id,
+                value_type: VALUE_TYPE_STRING,
+                value: KVValue::String(value),
+            };
+            if self.can_set_numeric_item(numeric_key)? {
+                self.set_numeric_item(numeric_key, item)?;
+            } else {
+                self.sparse_numeric_keys.insert(numeric_key);
+                self.string_map.insert(key, item);
+            }
+            return Ok(());
+        }
+
+        if let Some(old) = self.string_map.get(&key) {
+            let file_position = old.file_position;
+            let id = old.id;
+            let old_value_type = old.value_type;
+            if old_value_type != VALUE_TYPE_DELETE && old_value_type != VALUE_TYPE_STRING {
+                return Err(GuiXuError::TypeError {
+                    stored: old_value_type,
+                    expected: VALUE_TYPE_STRING,
+                });
+            }
+            self.map_file_mut()?
+                .write_u8(file_position + 4, VALUE_TYPE_STRING)?;
+            self.basic.append_store(id, value.as_bytes())?;
+            if let Some(old) = self.string_map.get_mut(&key) {
+                *old = KVItem {
+                    file_position,
+                    id,
+                    value_type: VALUE_TYPE_STRING,
+                    value: KVValue::String(value),
+                };
+            }
+            return Ok(());
+        }
+
+        let id = self.basic.check_id_and_get(0)?;
+        let file_position = self.write_kv_item_record(&key, id, VALUE_TYPE_STRING)?;
+        self.basic.append_store(id, value.as_bytes())?;
+        self.string_map.insert(
+            key,
+            KVItem {
+                file_position,
+                id,
+                value_type: VALUE_TYPE_STRING,
+                value: KVValue::String(value),
+            },
+        );
+        Ok(())
     }
 
     pub fn put_byte_array(&mut self, key: impl Into<String>, data: Vec<u8>) -> Result<()> {
@@ -398,8 +671,7 @@ impl KVBox {
 
     pub fn get_string(&self, key: &str) -> Result<&str> {
         let item = self
-            .map
-            .get(key)
+            .lookup_item(key)
             .ok_or_else(|| GuiXuError::KeyNotFound(key.to_string()))?;
         if item.value_type == VALUE_TYPE_DELETE {
             return Err(GuiXuError::KeyNotFound(key.to_string()));
@@ -461,7 +733,10 @@ impl KVBox {
         if let Some(map_path) = map_path {
             let _ = remove_file(map_path);
         }
-        self.map.clear();
+        self.string_map.clear();
+        self.numeric_items.clear();
+        self.sparse_numeric_keys.clear();
+        self.numeric_len = 0;
         self.map_file_append_position = 0;
         self.map_capacity_dirty = false;
 
@@ -484,7 +759,7 @@ impl KVBox {
 
     pub fn close(&mut self) -> Result<()> {
         if self.map_capacity_dirty {
-            let len = self.map.len();
+            let len = self.string_map.len() + self.numeric_len;
             if let Some(map_file) = self.map_file.as_mut() {
                 map_file.write_i32(0, (len as i32) << 1)?;
             }
@@ -530,4 +805,31 @@ fn type_error(value: KVValue, expected: u8) -> GuiXuError {
         stored: value.kind(),
         expected,
     }
+}
+
+fn parse_dense_numeric_key(key: &str) -> Option<u64> {
+    parse_dense_numeric_key_bytes(key.as_bytes())
+}
+
+fn parse_dense_numeric_key_bytes(bytes: &[u8]) -> Option<u64> {
+    if bytes.is_empty() || (bytes.len() > 1 && bytes[0] == b'0') {
+        return None;
+    }
+
+    let mut value = 0_u64;
+    for byte in bytes {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
+    }
+    if value <= MAX_DENSE_NUMERIC_KEY {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn should_store_dense_numeric(current_len: usize, index: usize) -> bool {
+    index <= current_len || index.saturating_sub(current_len) <= MAX_DENSE_NUMERIC_GAP
 }

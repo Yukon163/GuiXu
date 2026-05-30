@@ -38,10 +38,10 @@ fn benchmark_kv_box(count: usize, path: &str) -> Result<()> {
 
     println!("\nKVBox<String>");
     measure("create", count, |index| {
-        box_.put_string(index.to_string(), "GuiXu")
+        box_.put_string(index.to_string(), "dasdas")
     })?;
     measure("update", count, |index| {
-        box_.put_string(index.to_string(), "GuiXu-Rust")
+        box_.put_string(index.to_string(), "dasdasdas")
     })?;
     measure("read", count, |index| {
         let _ = box_.get_string(&index.to_string())?;
