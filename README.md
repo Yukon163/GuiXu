@@ -83,6 +83,10 @@ cargo run --release --example benchmark -- 1000000 /tmp/guixu-bench
 
 For more stable numbers, prefer a Linux filesystem path such as `/tmp/...` inside WSL instead of `/mnt/c/...`, because Windows-mounted paths are usually slower for file I/O.
 
+## License
+
+GuiXu Rust is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
 ### Current 10M Operation Results
 
 Environment used for the latest comparison:
