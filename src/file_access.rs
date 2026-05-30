@@ -1,7 +1,6 @@
 use crate::byte_ops::{bytes_to_i32, bytes_to_u64, i32_to_bytes, u64_to_bytes};
 use crate::error::{GuiXuError, Result};
 use memmap2::{MmapMut, MmapOptions};
-use parking_lot::Mutex;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -21,7 +20,7 @@ fn to_usize(value: u64) -> Result<usize> {
 
 pub(crate) struct AutoIncreaseFileAccess {
     path: PathBuf,
-    inner: Mutex<AutoInner>,
+    inner: AutoInner,
 }
 
 struct AutoInner {
@@ -55,12 +54,12 @@ impl AutoIncreaseFileAccess {
             mmap.flush()?;
             return Ok(Self {
                 path,
-                inner: Mutex::new(AutoInner {
+                inner: AutoInner {
                     file,
                     mmap,
                     file_size,
                     actual_length: initial_size,
-                }),
+                },
             });
         }
 
@@ -74,12 +73,12 @@ impl AutoIncreaseFileAccess {
 
         Ok(Self {
             path,
-            inner: Mutex::new(AutoInner {
+            inner: AutoInner {
                 file,
                 mmap,
                 file_size,
                 actual_length,
-            }),
+            },
         })
     }
 
@@ -88,33 +87,31 @@ impl AutoIncreaseFileAccess {
     }
 
     pub(crate) fn length(&self) -> u64 {
-        self.inner.lock().actual_length
+        self.inner.actual_length
     }
 
     pub(crate) fn file_size(&self) -> u64 {
-        self.inner.lock().file_size
+        self.inner.file_size
     }
 
     pub(crate) fn read_exact_at(&self, position: u64, dst: &mut [u8]) -> Result<()> {
-        let inner = self.inner.lock();
         let start = to_usize(position)?;
         let end = start + dst.len();
-        if end > to_usize(inner.actual_length)? {
+        if end > to_usize(self.inner.actual_length)? {
             return Err(GuiXuError::Corrupt(format!(
                 "read beyond logical file length at {position}"
             )));
         }
-        dst.copy_from_slice(&inner.mmap[start..end]);
+        dst.copy_from_slice(&self.inner.mmap[start..end]);
         Ok(())
     }
 
-    pub(crate) fn write_all_at(&self, position: u64, source: &[u8]) -> Result<()> {
-        let mut inner = self.inner.lock();
+    pub(crate) fn write_all_at(&mut self, position: u64, source: &[u8]) -> Result<()> {
         let new_length = position + source.len() as u64;
-        inner.update_length(new_length)?;
+        self.inner.update_length(new_length)?;
         let start = to_usize(position)?;
         let end = start + source.len();
-        inner.mmap[start..end].copy_from_slice(source);
+        self.inner.mmap[start..end].copy_from_slice(source);
         Ok(())
     }
 
@@ -124,7 +121,7 @@ impl AutoIncreaseFileAccess {
         Ok(bytes_to_i32(&buffer))
     }
 
-    pub(crate) fn write_i32(&self, position: u64, value: i32) -> Result<()> {
+    pub(crate) fn write_i32(&mut self, position: u64, value: i32) -> Result<()> {
         self.write_all_at(position, &i32_to_bytes(value))
     }
 
@@ -134,7 +131,7 @@ impl AutoIncreaseFileAccess {
         Ok(bytes_to_u64(&buffer))
     }
 
-    pub(crate) fn write_u64(&self, position: u64, value: u64) -> Result<()> {
+    pub(crate) fn write_u64(&mut self, position: u64, value: u64) -> Result<()> {
         self.write_all_at(position, &u64_to_bytes(value))
     }
 
@@ -144,12 +141,12 @@ impl AutoIncreaseFileAccess {
         Ok(buffer[0])
     }
 
-    pub(crate) fn write_u8(&self, position: u64, value: u8) -> Result<()> {
+    pub(crate) fn write_u8(&mut self, position: u64, value: u8) -> Result<()> {
         self.write_all_at(position, &[value])
     }
 
     pub(crate) fn flush(&self) -> Result<()> {
-        self.inner.lock().mmap.flush()?;
+        self.inner.mmap.flush()?;
         Ok(())
     }
 }
@@ -189,7 +186,7 @@ impl AutoInner {
 pub(crate) struct FixSizeFileAccess {
     path: PathBuf,
     size: u64,
-    file: Mutex<File>,
+    file: File,
 }
 
 impl FixSizeFileAccess {
@@ -202,33 +199,27 @@ impl FixSizeFileAccess {
             .create(true)
             .open(&path)?;
         file.set_len(size)?;
-        Ok(Self {
-            path,
-            size,
-            file: Mutex::new(file),
-        })
+        Ok(Self { path, size, file })
     }
 
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
-    pub(crate) fn read_exact_at(&self, position: u64, dst: &mut [u8]) -> Result<()> {
-        let mut file = self.file.lock();
-        file.seek(SeekFrom::Start(position))?;
-        file.read_exact(dst)?;
+    pub(crate) fn read_exact_at(&mut self, position: u64, dst: &mut [u8]) -> Result<()> {
+        self.file.seek(SeekFrom::Start(position))?;
+        self.file.read_exact(dst)?;
         Ok(())
     }
 
-    pub(crate) fn write_all_at(&self, position: u64, source: &[u8]) -> Result<()> {
-        let mut file = self.file.lock();
-        file.seek(SeekFrom::Start(position))?;
-        file.write_all(source)?;
+    pub(crate) fn write_all_at(&mut self, position: u64, source: &[u8]) -> Result<()> {
+        self.file.seek(SeekFrom::Start(position))?;
+        self.file.write_all(source)?;
         Ok(())
     }
 
-    pub(crate) fn flush(&self) -> Result<()> {
-        self.file.lock().flush()?;
+    pub(crate) fn flush(&mut self) -> Result<()> {
+        self.file.flush()?;
         Ok(())
     }
 

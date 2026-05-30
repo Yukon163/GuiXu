@@ -33,7 +33,7 @@ impl GuiXu {
     where
         T: StoreData + Serialize + DeserializeOwned,
     {
-        self.named_box_for(std::any::type_name::<T>())
+        self.named_box_for(sanitize_type_name(std::any::type_name::<T>()))
     }
 
     pub fn named_box_for<T>(&self, name: impl Into<String>) -> Result<TypedBox<T>>
@@ -50,4 +50,13 @@ impl GuiXu {
     pub fn kv_box_for(&self, name: impl Into<String>) -> Result<KVBox> {
         KVBox::open(self.inner.path.clone(), name.into())
     }
+}
+
+fn sanitize_type_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '.' => ch,
+            _ => '_',
+        })
+        .collect()
 }

@@ -1,20 +1,19 @@
 use crate::basic_box::{BasicBox, BoxInfo};
 use crate::error::Result;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub struct ByteArrayBox {
-    basic: Arc<BasicBox>,
+    basic: BasicBox,
 }
 
 impl ByteArrayBox {
     pub(crate) fn open(path: PathBuf, name: String) -> Result<Self> {
         Ok(Self {
-            basic: Arc::new(BasicBox::open(path, name)?),
+            basic: BasicBox::open(path, name)?,
         })
     }
 
-    pub fn put(&self, id: u64, data: Vec<u8>) -> Result<u64> {
+    pub fn put(&mut self, id: u64, data: Vec<u8>) -> Result<u64> {
         let id = self.basic.check_id_and_get(id)?;
         self.basic.append_store(id, &data)?;
         Ok(id)
@@ -28,19 +27,19 @@ impl ByteArrayBox {
         self.basic.all_bytes()
     }
 
-    pub fn remove(&self, id: u64) -> Result<()> {
+    pub fn remove(&mut self, id: u64) -> Result<()> {
         self.basic.remove_entry(id)
     }
 
-    pub fn clear(&self, re_init: bool) -> Result<()> {
+    pub fn clear(&mut self, re_init: bool) -> Result<()> {
         self.basic.clear(re_init)
     }
 
-    pub fn compact(&self) -> Result<()> {
+    pub fn compact(&mut self) -> Result<()> {
         self.basic.compact()
     }
 
-    pub fn close(&self) -> Result<()> {
+    pub fn close(&mut self) -> Result<()> {
         self.basic.close()
     }
 

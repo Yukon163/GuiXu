@@ -12,8 +12,8 @@ impl_store_data!(TestClass, id);
 
 fn main() -> Result<()> {
     let db = GuiXu::new("./target/example-db")?;
-    let box_ = db.box_for::<TestClass>()?;
-    let kv = db.kv_box_for("testKv")?;
+    let mut box_ = db.box_for::<TestClass>()?;
+    let mut kv = db.kv_box_for("testKv")?;
 
     let mut data = TestClass {
         id: 0,

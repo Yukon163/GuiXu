@@ -3,7 +3,6 @@ use crate::error::{GuiXuError, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub trait StoreData {
     fn id(&self) -> u64;
@@ -11,7 +10,7 @@ pub trait StoreData {
 }
 
 pub struct TypedBox<T> {
-    basic: Arc<BasicBox>,
+    basic: BasicBox,
     _marker: PhantomData<T>,
 }
 
@@ -21,12 +20,12 @@ where
 {
     pub(crate) fn open(path: PathBuf, name: String) -> Result<Self> {
         Ok(Self {
-            basic: Arc::new(BasicBox::open(path, name)?),
+            basic: BasicBox::open(path, name)?,
             _marker: PhantomData,
         })
     }
 
-    pub fn put(&self, data: &mut T) -> Result<u64> {
+    pub fn put(&mut self, data: &mut T) -> Result<u64> {
         let id = self.basic.check_id_and_get(data.id())?;
         data.set_id(id);
         let bytes = bincode::serialize(data)
@@ -54,19 +53,19 @@ where
             .collect()
     }
 
-    pub fn remove(&self, id: u64) -> Result<()> {
+    pub fn remove(&mut self, id: u64) -> Result<()> {
         self.basic.remove_entry(id)
     }
 
-    pub fn clear(&self, re_init: bool) -> Result<()> {
+    pub fn clear(&mut self, re_init: bool) -> Result<()> {
         self.basic.clear(re_init)
     }
 
-    pub fn compact(&self) -> Result<()> {
+    pub fn compact(&mut self) -> Result<()> {
         self.basic.compact()
     }
 
-    pub fn close(&self) -> Result<()> {
+    pub fn close(&mut self) -> Result<()> {
         self.basic.close()
     }
 

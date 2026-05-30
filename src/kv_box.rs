@@ -6,12 +6,10 @@ use crate::byte_ops::{
 };
 use crate::error::{GuiXuError, Result};
 use crate::file_access::AutoIncreaseFileAccess;
-use parking_lot::{Mutex, RwLock};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 use std::fs::remove_file;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 const KV_ITEM_FIX_LENGTH: u64 = 13;
 const BOOLEAN_TRUE: u8 = 1;
@@ -38,7 +36,7 @@ enum KVValue {
     Long(u64),
     Float(f32),
     Double(f64),
-    String(String),
+    String(Cow<'static, str>),
     ByteArray(Vec<u8>),
     IntArray(Vec<i32>),
     LongArray(Vec<u64>),
@@ -55,38 +53,44 @@ struct KVItem {
 }
 
 pub struct KVBox {
-    basic: Arc<BasicBox>,
-    map: RwLock<HashMap<String, KVItem>>,
-    map_file: Mutex<Option<Arc<AutoIncreaseFileAccess>>>,
-    map_file_append_position: AtomicU64,
+    basic: BasicBox,
+    map: FxHashMap<String, KVItem>,
+    map_file: Option<AutoIncreaseFileAccess>,
+    map_file_append_position: u64,
+    map_capacity_dirty: bool,
 }
 
 impl KVBox {
     pub(crate) fn open(path: PathBuf, name: String) -> Result<Self> {
-        let basic = Arc::new(BasicBox::open(path, name)?);
-        let map_file = Arc::new(AutoIncreaseFileAccess::open(
+        let basic = BasicBox::open(path, name)?;
+        let map_file = AutoIncreaseFileAccess::open(
             basic.path().join(format!("{}-K2IdMap", basic.name())),
             4,
-        )?);
-        let box_ = Self {
+        )?;
+        let mut box_ = Self {
             basic,
-            map: RwLock::new(HashMap::new()),
-            map_file: Mutex::new(Some(map_file)),
-            map_file_append_position: AtomicU64::new(0),
+            map: FxHashMap::default(),
+            map_file: Some(map_file),
+            map_file_append_position: 0,
+            map_capacity_dirty: false,
         };
         box_.initial_map()?;
         Ok(box_)
     }
 
-    fn map_file(&self) -> Result<Arc<AutoIncreaseFileAccess>> {
+    fn map_file(&self) -> Result<&AutoIncreaseFileAccess> {
         self.map_file
-            .lock()
             .as_ref()
-            .cloned()
             .ok_or_else(|| GuiXuError::Corrupt("kv map file is closed".to_string()))
     }
 
-    fn initial_map(&self) -> Result<()> {
+    fn map_file_mut(&mut self) -> Result<&mut AutoIncreaseFileAccess> {
+        self.map_file
+            .as_mut()
+            .ok_or_else(|| GuiXuError::Corrupt("kv map file is closed".to_string()))
+    }
+
+    fn initial_map(&mut self) -> Result<()> {
         let map_file = self.map_file()?;
         let length = map_file.length();
         if length < 4 {
@@ -96,9 +100,8 @@ impl KVBox {
         }
 
         let capacity = map_file.read_i32(0)?.max(0) as usize;
-        self.map_file_append_position
-            .store(length, Ordering::SeqCst);
-        let mut map = HashMap::with_capacity(capacity);
+        let mut map = FxHashMap::default();
+        map.reserve(capacity);
         let mut cursor = 4;
 
         while cursor < length {
@@ -134,7 +137,8 @@ impl KVBox {
             );
         }
 
-        *self.map.write() = map;
+        self.map_file_append_position = length;
+        self.map = map;
         Ok(())
     }
 
@@ -169,10 +173,10 @@ impl KVBox {
             VALUE_TYPE_LONG => Ok(KVValue::Long(bytes_to_u64(bytes))),
             VALUE_TYPE_FLOAT => Ok(KVValue::Float(f32::from_bits(bytes_to_i32(bytes) as u32))),
             VALUE_TYPE_DOUBLE => Ok(KVValue::Double(f64::from_bits(bytes_to_u64(bytes)))),
-            VALUE_TYPE_STRING => Ok(KVValue::String(
+            VALUE_TYPE_STRING => Ok(KVValue::String(Cow::Owned(
                 String::from_utf8(bytes.to_vec())
                     .map_err(|error| GuiXuError::Corrupt(error.to_string()))?,
-            )),
+            ))),
             VALUE_TYPE_BYTE_ARRAY => Ok(KVValue::ByteArray(bytes.to_vec())),
             VALUE_TYPE_INT_ARRAY => Ok(KVValue::IntArray(bytes_to_i32_vec(bytes))),
             VALUE_TYPE_LONG_ARRAY => Ok(KVValue::LongArray(bytes_to_u64_vec(bytes))),
@@ -185,13 +189,16 @@ impl KVBox {
         }
     }
 
-    fn add_kv_item(&self, key: &str, id: u64, value_type: u8, value: KVValue) -> Result<KVItem> {
-        let map_file = self.map_file()?;
+    fn add_kv_item(
+        &mut self,
+        key: &str,
+        id: u64,
+        value_type: u8,
+        value: KVValue,
+    ) -> Result<KVItem> {
         let key_bytes = key.as_bytes();
-        let mut position = self.map_file_append_position.fetch_add(
-            KV_ITEM_FIX_LENGTH + key_bytes.len() as u64,
-            Ordering::SeqCst,
-        );
+        let position = self.map_file_append_position;
+        self.map_file_append_position += KV_ITEM_FIX_LENGTH + key_bytes.len() as u64;
 
         let item = KVItem {
             file_position: position,
@@ -200,55 +207,66 @@ impl KVBox {
             value,
         };
 
-        map_file.write_i32(position, key_bytes.len() as i32)?;
-        position += 4;
-        map_file.write_u8(position, value_type)?;
-        position += 1;
-        map_file.write_u64(position, id)?;
-        position += 8;
-        map_file.write_all_at(position, key_bytes)?;
-        map_file.write_i32(0, (self.map.read().len() as i32) << 1)?;
+        let mut buffer = Vec::with_capacity(KV_ITEM_FIX_LENGTH as usize + key_bytes.len());
+        buffer.extend_from_slice(&i32_to_bytes(key_bytes.len() as i32));
+        buffer.push(value_type);
+        buffer.extend_from_slice(&u64_to_bytes(id));
+        buffer.extend_from_slice(key_bytes);
+
+        self.map_file_mut()?.write_all_at(position, &buffer)?;
+        self.map_capacity_dirty = true;
         Ok(item)
     }
 
-    fn update_kv_item(&self, old: &KVItem, value_type: u8, value: KVValue) -> Result<KVItem> {
-        if old.value_type != VALUE_TYPE_DELETE && old.value_type != value_type {
+    fn update_kv_item(
+        &mut self,
+        file_position: u64,
+        id: u64,
+        old_value_type: u8,
+        value_type: u8,
+        value: KVValue,
+    ) -> Result<KVItem> {
+        if old_value_type != VALUE_TYPE_DELETE && old_value_type != value_type {
             return Err(GuiXuError::TypeError {
-                stored: old.value_type,
+                stored: old_value_type,
                 expected: value_type,
             });
         }
-        self.map_file()?
-            .write_u8(old.file_position + 4, value_type)?;
+        self.map_file_mut()?
+            .write_u8(file_position + 4, value_type)?;
         Ok(KVItem {
-            file_position: old.file_position,
-            id: old.id,
+            file_position,
+            id,
             value_type,
             value,
         })
     }
 
-    fn put_data(&self, key: impl Into<String>, value_type: u8, value: KVValue) -> Result<()> {
+    fn put_data(&mut self, key: impl Into<String>, value_type: u8, value: KVValue) -> Result<()> {
         let key = key.into();
-        let (id, item) = {
-            let map = self.map.read();
-            if let Some(old) = map.get(&key) {
-                (old.id, self.update_kv_item(old, value_type, value.clone())?)
-            } else {
-                let id = self.basic.check_id_and_get(0)?;
-                (id, self.add_kv_item(&key, id, value_type, value.clone())?)
-            }
-        };
-
         let bytes = Self::value_to_byte_array(&value, value_type)?;
-        self.basic.append_store(id, &bytes)?;
-        self.map.write().insert(key, item);
-        Ok(())
+        if let Some(old) = self.map.get(&key) {
+            let file_position = old.file_position;
+            let id = old.id;
+            let old_value_type = old.value_type;
+            let item = self.update_kv_item(file_position, id, old_value_type, value_type, value)?;
+            self.basic.append_store(id, &bytes)?;
+            if let Some(old) = self.map.get_mut(&key) {
+                *old = item;
+            }
+            return Ok(());
+        } else {
+            let id = self.basic.check_id_and_get(0)?;
+            let item = self.add_kv_item(&key, id, value_type, value)?;
+            self.basic.append_store(id, &bytes)?;
+            self.map.insert(key, item);
+            Ok(())
+        }
     }
 
     fn get_data(&self, key: &str, expected_type: u8) -> Result<KVValue> {
-        let map = self.map.read();
-        let item = map
+        let item = self
+            .map
             .get(key)
             .ok_or_else(|| GuiXuError::KeyNotFound(key.to_string()))?;
         if item.value_type == VALUE_TYPE_DELETE {
@@ -263,70 +281,76 @@ impl KVBox {
         Ok(item.value.clone())
     }
 
-    pub fn remove(&self, key: &str) -> Result<()> {
-        let Some(item) = self.map.read().get(key).cloned() else {
+    pub fn remove(&mut self, key: &str) -> Result<()> {
+        let Some(item) = self.map.get(key) else {
             return Ok(());
         };
+        let file_position = item.file_position;
+        let id = item.id;
 
-        self.basic.remove_entry(item.id)?;
-        self.map_file()?
-            .write_u8(item.file_position + 4, VALUE_TYPE_DELETE)?;
-        self.map.write().insert(
-            key.to_string(),
-            KVItem {
+        self.basic.remove_entry(id)?;
+        self.map_file_mut()?
+            .write_u8(file_position + 4, VALUE_TYPE_DELETE)?;
+        if let Some(item) = self.map.get_mut(key) {
+            *item = KVItem {
+                file_position,
+                id,
                 value_type: VALUE_TYPE_DELETE,
                 value: KVValue::Deleted,
-                ..item
-            },
-        );
+            };
+        }
         Ok(())
     }
 
-    pub fn put_bool(&self, key: impl Into<String>, data: bool) -> Result<()> {
+    pub fn put_bool(&mut self, key: impl Into<String>, data: bool) -> Result<()> {
         self.put_data(key, VALUE_TYPE_BOOLEAN, KVValue::Bool(data))
     }
 
-    pub fn put_byte(&self, key: impl Into<String>, data: u8) -> Result<()> {
+    pub fn put_byte(&mut self, key: impl Into<String>, data: u8) -> Result<()> {
         self.put_data(key, VALUE_TYPE_BYTE, KVValue::Byte(data))
     }
 
-    pub fn put_int(&self, key: impl Into<String>, data: i32) -> Result<()> {
+    pub fn put_int(&mut self, key: impl Into<String>, data: i32) -> Result<()> {
         self.put_data(key, VALUE_TYPE_INT, KVValue::Int(data))
     }
 
-    pub fn put_long(&self, key: impl Into<String>, data: u64) -> Result<()> {
+    pub fn put_long(&mut self, key: impl Into<String>, data: u64) -> Result<()> {
         self.put_data(key, VALUE_TYPE_LONG, KVValue::Long(data))
     }
 
-    pub fn put_float(&self, key: impl Into<String>, data: f32) -> Result<()> {
+    pub fn put_float(&mut self, key: impl Into<String>, data: f32) -> Result<()> {
         self.put_data(key, VALUE_TYPE_FLOAT, KVValue::Float(data))
     }
 
-    pub fn put_double(&self, key: impl Into<String>, data: f64) -> Result<()> {
+    pub fn put_double(&mut self, key: impl Into<String>, data: f64) -> Result<()> {
         self.put_data(key, VALUE_TYPE_DOUBLE, KVValue::Double(data))
     }
 
-    pub fn put_string(&self, key: impl Into<String>, data: impl Into<String>) -> Result<()> {
+    pub fn put_string(
+        &mut self,
+        key: impl Into<String>,
+        data: impl Into<Cow<'static, str>>,
+    ) -> Result<()> {
         self.put_data(key, VALUE_TYPE_STRING, KVValue::String(data.into()))
     }
 
-    pub fn put_byte_array(&self, key: impl Into<String>, data: Vec<u8>) -> Result<()> {
+    pub fn put_byte_array(&mut self, key: impl Into<String>, data: Vec<u8>) -> Result<()> {
         self.put_data(key, VALUE_TYPE_BYTE_ARRAY, KVValue::ByteArray(data))
     }
 
-    pub fn put_int_array(&self, key: impl Into<String>, data: Vec<i32>) -> Result<()> {
+    pub fn put_int_array(&mut self, key: impl Into<String>, data: Vec<i32>) -> Result<()> {
         self.put_data(key, VALUE_TYPE_INT_ARRAY, KVValue::IntArray(data))
     }
 
-    pub fn put_long_array(&self, key: impl Into<String>, data: Vec<u64>) -> Result<()> {
+    pub fn put_long_array(&mut self, key: impl Into<String>, data: Vec<u64>) -> Result<()> {
         self.put_data(key, VALUE_TYPE_LONG_ARRAY, KVValue::LongArray(data))
     }
 
-    pub fn put_float_array(&self, key: impl Into<String>, data: Vec<f32>) -> Result<()> {
+    pub fn put_float_array(&mut self, key: impl Into<String>, data: Vec<f32>) -> Result<()> {
         self.put_data(key, VALUE_TYPE_FLOAT_ARRAY, KVValue::FloatArray(data))
     }
 
-    pub fn put_double_array(&self, key: impl Into<String>, data: Vec<f64>) -> Result<()> {
+    pub fn put_double_array(&mut self, key: impl Into<String>, data: Vec<f64>) -> Result<()> {
         self.put_data(key, VALUE_TYPE_DOUBLE_ARRAY, KVValue::DoubleArray(data))
     }
 
@@ -372,10 +396,23 @@ impl KVBox {
         }
     }
 
-    pub fn get_string(&self, key: &str) -> Result<String> {
-        match self.get_data(key, VALUE_TYPE_STRING)? {
-            KVValue::String(value) => Ok(value),
-            value => Err(type_error(value, VALUE_TYPE_STRING)),
+    pub fn get_string(&self, key: &str) -> Result<&str> {
+        let item = self
+            .map
+            .get(key)
+            .ok_or_else(|| GuiXuError::KeyNotFound(key.to_string()))?;
+        if item.value_type == VALUE_TYPE_DELETE {
+            return Err(GuiXuError::KeyNotFound(key.to_string()));
+        }
+        if item.value_type != VALUE_TYPE_STRING {
+            return Err(GuiXuError::TypeError {
+                stored: item.value_type,
+                expected: VALUE_TYPE_STRING,
+            });
+        }
+        match &item.value {
+            KVValue::String(value) => Ok(value.as_ref()),
+            value => Err(type_error(value.clone(), VALUE_TYPE_STRING)),
         }
     }
 
@@ -414,8 +451,8 @@ impl KVBox {
         }
     }
 
-    pub fn clear(&self, re_init: bool) -> Result<()> {
-        let map_file = self.map_file.lock().take();
+    pub fn clear(&mut self, re_init: bool) -> Result<()> {
+        let map_file = self.map_file.take();
         let map_path = map_file.as_ref().map(|file| file.path().to_path_buf());
         if let Some(map_file) = map_file {
             map_file.flush()?;
@@ -424,28 +461,36 @@ impl KVBox {
         if let Some(map_path) = map_path {
             let _ = remove_file(map_path);
         }
-        self.map.write().clear();
-        self.map_file_append_position.store(0, Ordering::SeqCst);
+        self.map.clear();
+        self.map_file_append_position = 0;
+        self.map_capacity_dirty = false;
 
         if re_init {
-            let map_file = Arc::new(AutoIncreaseFileAccess::open(
+            let map_file = AutoIncreaseFileAccess::open(
                 self.basic
                     .path()
                     .join(format!("{}-K2IdMap", self.basic.name())),
                 4,
-            )?);
-            *self.map_file.lock() = Some(map_file);
+            )?;
+            self.map_file = Some(map_file);
             self.initial_map()?;
         }
         Ok(())
     }
 
-    pub fn compact(&self) -> Result<()> {
+    pub fn compact(&mut self) -> Result<()> {
         self.basic.compact()
     }
 
-    pub fn close(&self) -> Result<()> {
-        if let Some(map_file) = self.map_file.lock().as_ref() {
+    pub fn close(&mut self) -> Result<()> {
+        if self.map_capacity_dirty {
+            let len = self.map.len();
+            if let Some(map_file) = self.map_file.as_mut() {
+                map_file.write_i32(0, (len as i32) << 1)?;
+            }
+            self.map_capacity_dirty = false;
+        }
+        if let Some(map_file) = self.map_file.as_mut() {
             map_file.flush()?;
         }
         self.basic.close()
@@ -453,7 +498,7 @@ impl KVBox {
 
     pub fn get_info(&self) -> BoxInfo {
         let mut info = self.basic.get_info();
-        if let Some(map_file) = self.map_file.lock().as_ref() {
+        if let Some(map_file) = self.map_file.as_ref() {
             info.index_size += map_file.file_size();
         }
         info

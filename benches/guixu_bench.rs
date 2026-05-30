@@ -28,7 +28,7 @@ fn bench_kv_box(c: &mut Criterion) {
                 let box_ = db.kv_box_for("settings").unwrap();
                 Fixture { box_, tempdir }
             },
-            |fixture| {
+            |mut fixture| {
                 fixture
                     .box_
                     .put_string(black_box("name"), black_box("GuiXu"))
@@ -43,7 +43,7 @@ fn bench_kv_box(c: &mut Criterion) {
             || {
                 let tempdir = tempfile::tempdir().unwrap();
                 let db = GuiXu::new(tempdir.path()).unwrap();
-                let box_ = db.kv_box_for("settings").unwrap();
+                let mut box_ = db.kv_box_for("settings").unwrap();
                 box_.put_string("name", "GuiXu").unwrap();
                 Fixture { box_, tempdir }
             },
@@ -59,11 +59,11 @@ fn bench_kv_box(c: &mut Criterion) {
             || {
                 let tempdir = tempfile::tempdir().unwrap();
                 let db = GuiXu::new(tempdir.path()).unwrap();
-                let box_ = db.kv_box_for("settings").unwrap();
+                let mut box_ = db.kv_box_for("settings").unwrap();
                 box_.put_string("name", "GuiXu").unwrap();
                 Fixture { box_, tempdir }
             },
-            |fixture| {
+            |mut fixture| {
                 fixture.box_.remove(black_box("name")).unwrap();
             },
             BatchSize::SmallInput,
@@ -85,7 +85,7 @@ fn bench_byte_array_box(c: &mut Criterion) {
                 let box_ = db.byte_array_box_for("bytes").unwrap();
                 Fixture { box_, tempdir }
             },
-            |fixture| {
+            |mut fixture| {
                 fixture.box_.put(0, black_box(payload.clone())).unwrap();
             },
             BatchSize::SmallInput,
@@ -97,7 +97,7 @@ fn bench_byte_array_box(c: &mut Criterion) {
             || {
                 let tempdir = tempfile::tempdir().unwrap();
                 let db = GuiXu::new(tempdir.path()).unwrap();
-                let box_ = db.byte_array_box_for("bytes").unwrap();
+                let mut box_ = db.byte_array_box_for("bytes").unwrap();
                 let id = box_.put(0, payload.clone()).unwrap();
                 (Fixture { box_, tempdir }, id)
             },
@@ -113,11 +113,11 @@ fn bench_byte_array_box(c: &mut Criterion) {
             || {
                 let tempdir = tempfile::tempdir().unwrap();
                 let db = GuiXu::new(tempdir.path()).unwrap();
-                let box_ = db.byte_array_box_for("bytes").unwrap();
+                let mut box_ = db.byte_array_box_for("bytes").unwrap();
                 let id = box_.put(0, payload.clone()).unwrap();
                 (Fixture { box_, tempdir }, id)
             },
-            |(fixture, id)| {
+            |(mut fixture, id)| {
                 fixture.box_.remove(black_box(id)).unwrap();
             },
             BatchSize::SmallInput,
@@ -138,7 +138,7 @@ fn bench_typed_box(c: &mut Criterion) {
                 let box_ = db.box_for::<TestClass>().unwrap();
                 Fixture { box_, tempdir }
             },
-            |fixture| {
+            |mut fixture| {
                 let mut data = TestClass {
                     id: 0,
                     name: black_box("GuiXu").to_string(),
@@ -155,7 +155,7 @@ fn bench_typed_box(c: &mut Criterion) {
             || {
                 let tempdir = tempfile::tempdir().unwrap();
                 let db = GuiXu::new(tempdir.path()).unwrap();
-                let box_ = db.box_for::<TestClass>().unwrap();
+                let mut box_ = db.box_for::<TestClass>().unwrap();
                 let mut data = TestClass {
                     id: 0,
                     name: "GuiXu".to_string(),
@@ -176,7 +176,7 @@ fn bench_typed_box(c: &mut Criterion) {
             || {
                 let tempdir = tempfile::tempdir().unwrap();
                 let db = GuiXu::new(tempdir.path()).unwrap();
-                let box_ = db.box_for::<TestClass>().unwrap();
+                let mut box_ = db.box_for::<TestClass>().unwrap();
                 let mut data = TestClass {
                     id: 0,
                     name: "GuiXu".to_string(),
@@ -185,7 +185,7 @@ fn bench_typed_box(c: &mut Criterion) {
                 let id = box_.put(&mut data).unwrap();
                 (Fixture { box_, tempdir }, id)
             },
-            |(fixture, id)| {
+            |(mut fixture, id)| {
                 fixture.box_.remove(black_box(id)).unwrap();
             },
             BatchSize::SmallInput,

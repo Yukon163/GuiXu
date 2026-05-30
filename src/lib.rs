@@ -47,7 +47,7 @@ mod tests {
     fn byte_array_box_round_trips() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = GuiXu::new(dir.path())?;
-        let box_ = db.byte_array_box_for("bytes")?;
+        let mut box_ = db.byte_array_box_for("bytes")?;
 
         let id = box_.put(0, b"hello".to_vec())?;
 
@@ -60,7 +60,7 @@ mod tests {
     fn kv_box_round_trips_primitives() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = GuiXu::new(dir.path())?;
-        let kv = db.kv_box_for("settings")?;
+        let mut kv = db.kv_box_for("settings")?;
 
         kv.put_string("name", "GuiXu")?;
         kv.put_int("age", 18)?;
@@ -76,7 +76,7 @@ mod tests {
     fn typed_box_round_trips_store_data() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = GuiXu::new(dir.path())?;
-        let box_ = db.box_for::<TestClass>()?;
+        let mut box_ = db.box_for::<TestClass>()?;
         let mut data = TestClass {
             id: 0,
             name: "Aa".to_string(),

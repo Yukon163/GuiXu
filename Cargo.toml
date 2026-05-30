@@ -5,10 +5,10 @@ edition = "2021"
 
 [dependencies]
 memmap2 = "0.9"
-parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 bincode = "1.3"
 thiserror = "1"
+rustc-hash = "2"
 
 [dev-dependencies]
 criterion = "0.5"

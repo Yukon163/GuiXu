@@ -33,7 +33,7 @@ fn main() -> Result<()> {
 
 fn benchmark_kv_box(count: usize, path: &str) -> Result<()> {
     let db = GuiXu::new(path)?;
-    let box_ = db.kv_box_for("benchmark-kv")?;
+    let mut box_ = db.kv_box_for("benchmark-kv")?;
     box_.clear(true)?;
 
     println!("\nKVBox<String>");
@@ -54,7 +54,7 @@ fn benchmark_kv_box(count: usize, path: &str) -> Result<()> {
 
 fn benchmark_byte_array_box(count: usize, path: &str) -> Result<()> {
     let db = GuiXu::new(path)?;
-    let box_ = db.byte_array_box_for("benchmark-bytes")?;
+    let mut box_ = db.byte_array_box_for("benchmark-bytes")?;
     box_.clear(true)?;
     let payload = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
@@ -81,7 +81,7 @@ fn benchmark_byte_array_box(count: usize, path: &str) -> Result<()> {
 
 fn benchmark_typed_box(count: usize, path: &str) -> Result<()> {
     let db = GuiXu::new(path)?;
-    let box_ = db.box_for::<TestClass>()?;
+    let mut box_ = db.box_for::<TestClass>()?;
     box_.clear(true)?;
 
     println!("\nTypedBox<TestClass>");
