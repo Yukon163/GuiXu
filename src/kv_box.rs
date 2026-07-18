@@ -1,3 +1,7 @@
+// Derived from Delsart/GuiXu, originally licensed under Apache-2.0.
+// Rewritten in Rust and modified by GuiXu Rust contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::basic_box::{BasicBox, BoxInfo};
 use crate::byte_ops::{
     bytes_to_f32_vec, bytes_to_f64_vec, bytes_to_i32, bytes_to_i32_vec, bytes_to_u64,

@@ -1,3 +1,7 @@
+// Derived from Delsart/GuiXu, originally licensed under Apache-2.0.
+// Rewritten in Rust and modified by GuiXu Rust contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::basic_box::{BasicBox, BoxInfo};
 use crate::error::{GuiXuError, Result};
 use serde::{de::DeserializeOwned, Serialize};

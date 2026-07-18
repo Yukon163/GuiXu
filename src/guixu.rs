@@ -1,3 +1,7 @@
+// Derived from Delsart/GuiXu, originally licensed under Apache-2.0.
+// Rewritten in Rust and modified by GuiXu Rust contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::byte_array_box::ByteArrayBox;
 use crate::error::Result;
 use crate::kv_box::KVBox;

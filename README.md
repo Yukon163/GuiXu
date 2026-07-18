@@ -87,6 +87,20 @@ For more stable numbers, prefer a Linux filesystem path such as `/tmp/...` insid
 
 GuiXu Rust is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
+## Attribution
+
+GuiXu Rust is a derivative Rust rewrite of the original
+[Delsart/GuiXu](https://github.com/Delsart/GuiXu) Kotlin project. The original
+project and this rewrite are distributed under the Apache License, Version 2.0.
+
+The Rust rewrite and subsequent modifications are recorded in this branch under
+the following contributors:
+
+- 100011646-Wang Zhong Kai
+- Yukon163
+
+See [NOTICE](NOTICE) for the attribution notice shipped with the project.
+
 ### Current 10M Operation Results
 
 Environment used for the latest comparison:

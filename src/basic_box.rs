@@ -1,3 +1,7 @@
+// Derived from Delsart/GuiXu, originally licensed under Apache-2.0.
+// Rewritten in Rust and modified by GuiXu Rust contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::byte_ops::{bytes_to_i32, bytes_to_u64, i32_to_bytes, u64_to_bytes};
 use crate::error::{GuiXuError, Result};
 use crate::file_access::{AutoIncreaseFileAccess, FixSizeFileAccess};

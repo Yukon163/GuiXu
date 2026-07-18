@@ -1,3 +1,7 @@
+// Derived from Delsart/GuiXu, originally licensed under Apache-2.0.
+// Rewritten in Rust and modified by GuiXu Rust contributors.
+// SPDX-License-Identifier: Apache-2.0
+
 pub(crate) fn i32_to_bytes(value: i32) -> [u8; 4] {
     value.to_be_bytes()
 }
